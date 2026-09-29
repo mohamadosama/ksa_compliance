@@ -499,7 +499,7 @@ class TestZatcaMonetaryRounding(FrappeTestCase):
     def test_control_tax_inclusive_pricing(self):
         """Tax-inclusive pricing (included_in_print_rate = 1)."""
         items = [
-            {'amount': 100.00, 'net_amount': 100.00, 'rate': 115.00, 'qty': 1.0, 'tax_amount': 15.00}
+            {'amount': 115.00, 'net_amount': 100.00, 'rate': 115.00, 'qty': 1.0, 'tax_amount': 15.00}
         ]
         xml = self._build_test_xml(items_data=items, is_tax_included=1)
         self.assert_zatca_invariants(xml)

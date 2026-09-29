@@ -21,7 +21,7 @@ from frappe.utils import flt
 from .service import get_right_fieldname, update_result
 from .prepayment_invoice.prepayment_invoice_factory import prepayment_invoice_factory_create
 
-from .tax import create_tax_categories, create_allowance_charge, create_tax_total
+from .tax import create_tax_categories, create_allowance_charge, create_tax_total, canonical_money
 
 
 class Einvoice:
@@ -719,13 +719,14 @@ class Einvoice:
             has_discount = isinstance(item.discount_amount, float) and item.discount_amount > 0
 
             tax_percent = abs(item.tax_rate or 0.0)
-            tax_amount_with_qty = abs(item.tax_amount or 0.0)
-            discount_with_qty = abs(item.discount_amount * item.qty) if has_discount else 0.0
-            amount_with_qty = abs(
-                flt(abs(item.amount) / (1 + (tax_percent / 100)), 2) if is_tax_included else item.amount
-            )
-            net_amount_with_qty = abs(item.net_amount)
-            rate_without_qty = abs(item.rate)
+            tax_amount_with_qty = canonical_money(item.tax_amount or 0.0)
+            discount_with_qty = canonical_money(abs(item.discount_amount * item.qty) if has_discount else 0.0)
+            if is_tax_included:
+                amount_with_qty = canonical_money(flt(item.amount) / (1 + (tax_percent / 100)))
+            else:
+                amount_with_qty = canonical_money(item.amount)
+            net_amount_with_qty = canonical_money(item.net_amount)
+            rate_without_qty = canonical_money(item.rate)
             item_data = {
                 'idx': item.idx,
                 'qty': abs(item.qty),
@@ -737,8 +738,8 @@ class Einvoice:
                 'discount_percentage': abs(item.discount_percentage) if has_discount else 0.0,
                 'tax_percent': tax_percent,
                 'amount': amount_with_qty,
-                'rounding_amount': tax_amount_with_qty + amount_with_qty,
-                'base_amount': amount_with_qty + discount_with_qty,
+                'rounding_amount': canonical_money(amount_with_qty + tax_amount_with_qty),
+                'base_amount': canonical_money(amount_with_qty + discount_with_qty),
                 'discount_amount': discount_with_qty if has_discount else 0.0,
                 'tax_amount': tax_amount_with_qty,
                 'item_tax_template': item.item_tax_template,
@@ -899,8 +900,34 @@ class Einvoice:
             get_right_fieldname('included_in_print_rate', self.sales_invoice_doc.doctype)
         )
         self.append_to_item_lines(item_lines, is_tax_included, self.sales_invoice_doc)
+        self.result['invoice']['item_lines'] = item_lines
+
+        # Canonical LineExtensionAmount (BT-106)
+        line_extension_amount = canonical_money(sum(it['amount'] for it in item_lines))
+        self.result['invoice']['line_extension_amount'] = line_extension_amount
+
+        # Canonical AllowanceTotalAmount (BT-107)
+        self.compute_invoice_discount_amount()
+        allowance_total_amount = canonical_money(self.result['invoice'].get('allowance_total_amount') or 0.0)
+        self.result['invoice']['allowance_total_amount'] = allowance_total_amount
+
+        # Canonical TaxExclusiveAmount (BT-109)
+        net_total = canonical_money(line_extension_amount - allowance_total_amount)
+        if self.sales_invoice_doc.doctype == 'Payment Entry':
+            if self.sales_invoice_doc.taxes[0].included_in_paid_amount:
+                net_total = canonical_money(
+                    self.sales_invoice_doc.paid_amount - self.sales_invoice_doc.total_taxes_and_charges
+                )
+        self.result['invoice']['net_total'] = net_total
+
+        # Build Tax Categories, VAT Subtotals (BT-116, BT-117), Tax Total (BT-110), and Document Allowances (BT-92)
         tax_categories = create_tax_categories(self.sales_invoice_doc, item_lines, is_tax_included)
-        tax_total = create_tax_total(tax_categories)
+
+        invoice_total_vat = None
+        if self.sales_invoice_doc.doctype != 'Payment Entry':
+            invoice_total_vat = canonical_money(self.sales_invoice_doc.total_taxes_and_charges or 0.0)
+
+        tax_total = create_tax_total(tax_categories, invoice_total_vat, allowance_total_amount)
         self.result['invoice']['tax_total'] = tax_total
         allowance_charge = create_allowance_charge(self.sales_invoice_doc, tax_total)
         self.result['invoice']['allowance_charge'] = allowance_charge
@@ -914,33 +941,43 @@ class Einvoice:
             tax_percent = abs(self.sales_invoice_doc.taxes[0].rate) / 100
             # Recalculated prepayment on Sales Order to include tax in the paid amount.
             if charge_type != 'Actual':
-                self.result['invoice']['base_total_taxes_and_charges'] = abs(
-                    self.sales_invoice_doc.base_total_taxes_and_charges
-                ) / (1 + tax_percent)
-                self.result['invoice']['total_taxes_and_charges'] = abs(
-                    self.sales_invoice_doc.total_taxes_and_charges
-                ) / (1 + tax_percent)
-
-        self.result['invoice']['item_lines'] = item_lines
-        self.result['invoice']['line_extension_amount'] = sum(it['amount'] for it in item_lines)
-        self.compute_invoice_discount_amount()
-        self.result['invoice']['net_total'] = (
-            self.result['invoice']['line_extension_amount'] - self.result['invoice']['allowance_total_amount']
-        )
-        if self.sales_invoice_doc.doctype == 'Payment Entry':
-            if self.sales_invoice_doc.taxes[0].included_in_paid_amount:
-                self.result['invoice']['net_total'] = (
-                    self.sales_invoice_doc.paid_amount - self.sales_invoice_doc.total_taxes_and_charges
+                self.result['invoice']['base_total_taxes_and_charges'] = canonical_money(
+                    abs(self.sales_invoice_doc.base_total_taxes_and_charges) / (1 + tax_percent)
                 )
-        self.result['invoice']['grand_total'] = (
-            self.result['invoice']['net_total'] + self.result['invoice']['total_taxes_and_charges']
-        )
-        rounding_adjustment = 0
-        if self.sales_invoice_doc.doctype != 'Payment Entry':
-            rounding_adjustment = self.sales_invoice_doc.rounding_adjustment
+                self.result['invoice']['total_taxes_and_charges'] = canonical_money(
+                    abs(self.sales_invoice_doc.total_taxes_and_charges) / (1 + tax_percent)
+                )
+        else:
+            total_taxes = canonical_money(tax_total.get('tax_amount') or 0.0)
+            self.result['invoice']['total_taxes_and_charges'] = total_taxes
+            self.result['invoice']['base_total_taxes_and_charges'] = total_taxes
 
-        self.result['invoice']['payable_amount'] = self.result['invoice']['grand_total'] + rounding_adjustment
+        # Canonical TaxInclusiveAmount (BT-112)
+        grand_total = canonical_money(net_total + self.result['invoice']['total_taxes_and_charges'])
+        self.result['invoice']['grand_total'] = grand_total
+
+        # Reconcile PayableRoundingAmount (BT-114) and PayableAmount (BT-115)
+        prepaid_amount = canonical_money(self.result['invoice'].get('prepaid_amount') or 0.0)
+        net_due = canonical_money(grand_total - prepaid_amount)
+
+        disable_rounding = self.sales_invoice_doc.get('disable_rounded_total')
+        rounded_total = self.sales_invoice_doc.get('rounded_total')
+
+        if (
+            self.sales_invoice_doc.doctype != 'Payment Entry'
+            and not disable_rounding
+            and rounded_total is not None
+            and rounded_total != 0.0
+        ):
+            target_payable = canonical_money(rounded_total)
+            rounding_adjustment = canonical_money(target_payable - net_due)
+            payable_amount = target_payable
+        else:
+            rounding_adjustment = 0.0
+            payable_amount = net_due
+
         self.result['invoice']['rounding_adjustment'] = rounding_adjustment
+        self.result['invoice']['payable_amount'] = payable_amount
 
         if self.sales_invoice_doc.doctype == 'Payment Entry':
             return
