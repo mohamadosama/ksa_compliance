@@ -303,9 +303,141 @@ class TestZatcaMonetaryRounding(FrappeTestCase):
                 f"Payable amount BT-115 ({bt_115}) != target ({target_payable})"
             )
 
+    def assert_zatca_positive_values(self, xml_str: str):
+        """Asserts that ZATCA monetary and quantity business terms comply with KSA positive-value rules.
+
+        Specifically verifies BR-KSA-F-04: document amounts and quantities in Credit Notes
+        must be represented as positive magnitudes, while allowing legitimate signed fields
+        such as PayableRoundingAmount (BT-114).
+        """
+        root = ET.fromstring(xml_str)
+        ns = self.ns
+
+        lmt = root.find('.//cac:LegalMonetaryTotal', ns)
+        self.assertIsNotNone(lmt, "cac:LegalMonetaryTotal missing")
+
+        bt_106 = Decimal(lmt.find('cbc:LineExtensionAmount', ns).text)
+        self.assertGreaterEqual(bt_106, Decimal('0.00'), f"BT-106 ({bt_106}) must be non-negative")
+
+        bt_107_el = lmt.find('cbc:AllowanceTotalAmount', ns)
+        if bt_107_el is not None and bt_107_el.text:
+            bt_107 = Decimal(bt_107_el.text)
+            self.assertGreaterEqual(bt_107, Decimal('0.00'), f"BT-107 ({bt_107}) must be non-negative")
+
+        bt_108_el = lmt.find('cbc:ChargeTotalAmount', ns)
+        if bt_108_el is not None and bt_108_el.text:
+            bt_108 = Decimal(bt_108_el.text)
+            self.assertGreaterEqual(bt_108, Decimal('0.00'), f"BT-108 ({bt_108}) must be non-negative")
+
+        bt_109 = Decimal(lmt.find('cbc:TaxExclusiveAmount', ns).text)
+        self.assertGreaterEqual(bt_109, Decimal('0.00'), f"BT-109 ({bt_109}) must be non-negative")
+
+        bt_112 = Decimal(lmt.find('cbc:TaxInclusiveAmount', ns).text)
+        self.assertGreaterEqual(bt_112, Decimal('0.00'), f"BT-112 ({bt_112}) must be non-negative")
+
+        bt_113_el = lmt.find('cbc:PrepaidAmount', ns)
+        if bt_113_el is not None and bt_113_el.text:
+            bt_113 = Decimal(bt_113_el.text)
+            self.assertGreaterEqual(bt_113, Decimal('0.00'), f"BT-113 ({bt_113}) must be non-negative")
+
+        bt_115 = Decimal(lmt.find('cbc:PayableAmount', ns).text)
+        self.assertGreaterEqual(bt_115, Decimal('0.00'), f"BT-115 ({bt_115}) must be non-negative")
+
+        # Note: PayableRoundingAmount (BT-114) is deliberately NOT asserted positive,
+        # as it can legitimately be signed.
+
+        # Invoice-level tax totals
+        for tt in root.findall('.//cac:TaxTotal', ns):
+            amt_el = tt.find('cbc:TaxAmount', ns)
+            if amt_el is not None and amt_el.text:
+                tax_amt = Decimal(amt_el.text)
+                self.assertGreaterEqual(tax_amt, Decimal('0.00'), f"TaxTotal TaxAmount ({tax_amt}) must be non-negative")
+            for st in tt.findall('cac:TaxSubtotal', ns):
+                taxable_el = st.find('cbc:TaxableAmount', ns)
+                if taxable_el is not None and taxable_el.text:
+                    taxable = Decimal(taxable_el.text)
+                    self.assertGreaterEqual(taxable, Decimal('0.00'), f"BT-116 TaxableAmount ({taxable}) must be non-negative")
+                st_tax_el = st.find('cbc:TaxAmount', ns)
+                if st_tax_el is not None and st_tax_el.text:
+                    st_tax = Decimal(st_tax_el.text)
+                    self.assertGreaterEqual(st_tax, Decimal('0.00'), f"BT-117 TaxAmount ({st_tax}) must be non-negative")
+
+        # Lines
+        for idx, line in enumerate(root.findall('.//cac:InvoiceLine', ns), 1):
+            qty_el = line.find('cbc:InvoicedQuantity', ns)
+            if qty_el is not None and qty_el.text:
+                qty = Decimal(qty_el.text)
+                self.assertGreaterEqual(qty, Decimal('0.00'), f"Line {idx} InvoicedQuantity ({qty}) must be non-negative")
+
+            bt_131 = Decimal(line.find('cbc:LineExtensionAmount', ns).text)
+            self.assertGreaterEqual(bt_131, Decimal('0.00'), f"Line {idx} BT-131 ({bt_131}) must be non-negative")
+
+            price_el = line.find('cac:Price/cbc:PriceAmount', ns)
+            if price_el is not None and price_el.text:
+                price = Decimal(price_el.text)
+                self.assertGreaterEqual(price, Decimal('0.00'), f"Line {idx} PriceAmount ({price}) must be non-negative")
+
+            line_tax_el = line.find('cac:TaxTotal/cbc:TaxAmount', ns)
+            if line_tax_el is not None and line_tax_el.text:
+                ksa_11 = Decimal(line_tax_el.text)
+                self.assertGreaterEqual(ksa_11, Decimal('0.00'), f"Line {idx} KSA-11 ({ksa_11}) must be non-negative")
+
+            line_round_el = line.find('cac:TaxTotal/cbc:RoundingAmount', ns)
+            if line_round_el is not None and line_round_el.text:
+                ksa_12 = Decimal(line_round_el.text)
+                self.assertGreaterEqual(ksa_12, Decimal('0.00'), f"Line {idx} KSA-12 ({ksa_12}) must be non-negative")
+
+            for ac in line.findall('cac:AllowanceCharge', ns):
+                ac_amt = Decimal(ac.find('cbc:Amount', ns).text)
+                self.assertGreaterEqual(ac_amt, Decimal('0.00'), f"Line {idx} AllowanceCharge Amount ({ac_amt}) must be non-negative")
+                base_el = ac.find('cbc:BaseAmount', ns)
+                if base_el is not None and base_el.text:
+                    base_amt = Decimal(base_el.text)
+                    self.assertGreaterEqual(base_amt, Decimal('0.00'), f"Line {idx} AllowanceCharge BaseAmount ({base_amt}) must be non-negative")
+
+        # Document-level allowance/charge
+        for ac in root.findall('cac:AllowanceCharge', ns):
+            ac_amt = Decimal(ac.find('cbc:Amount', ns).text)
+            self.assertGreaterEqual(ac_amt, Decimal('0.00'), f"Doc AllowanceCharge Amount ({ac_amt}) must be non-negative")
+            base_el = ac.find('cbc:BaseAmount', ns)
+            if base_el is not None and base_el.text:
+                base_amt = Decimal(base_el.text)
+                self.assertGreaterEqual(base_amt, Decimal('0.00'), f"Doc AllowanceCharge BaseAmount ({base_amt}) must be non-negative")
+
     # =========================================================================
     # Historical Production Regression Cases
     # =========================================================================
+
+    def test_case_credit_note_00232_regression(self):
+        """Historical Pattern: ACC-SINV-RET-2026-00232 (Credit Note / Return).
+
+        10-line return invoice with document discount on Net Total and rounded payable.
+        Demonstrates BR-KSA-F-04 (negative amounts in Credit Note), BR-CO-17, and BR-S-09
+        when ERPNext return signs are not normalized to positive magnitudes for ZATCA XML.
+        """
+        items = [
+            {'qty': -1.0, 'rate': 9.95, 'amount': -9.95, 'net_amount': -9.4624, 'tax_amount': -1.4194},
+            {'qty': -2.0, 'rate': 10.71, 'amount': -21.42, 'net_amount': -20.3705, 'tax_amount': -3.0556},
+            {'qty': -3.0, 'rate': 11.48, 'amount': -34.44, 'net_amount': -32.7524, 'tax_amount': -4.9129},
+            {'qty': -1.0, 'rate': 11.48, 'amount': -11.48, 'net_amount': -10.9175, 'tax_amount': -1.6376},
+            {'qty': -1.0, 'rate': 8.42, 'amount': -8.42, 'net_amount': -8.0074, 'tax_amount': -1.2011},
+            {'qty': -2.0, 'rate': 9.18, 'amount': -18.36, 'net_amount': -17.4604, 'tax_amount': -2.6191},
+            {'qty': -1.0, 'rate': 17.60, 'amount': -17.60, 'net_amount': -16.7376, 'tax_amount': -2.5106},
+            {'qty': -2.0, 'rate': 13.01, 'amount': -26.02, 'net_amount': -24.7450, 'tax_amount': -3.7118},
+            {'qty': -1.0, 'rate': 8.42, 'amount': -8.42, 'net_amount': -8.0074, 'tax_amount': -1.2011},
+            {'qty': -2.0, 'rate': 11.48, 'amount': -22.96, 'net_amount': -21.8350, 'tax_amount': -3.2753},
+        ]
+        xml = self._build_test_xml(
+            items_data=items,
+            discount_amount=-8.77443,
+            apply_discount_on='Net Total',
+            rounding_adjustment=-0.1601,
+            rounded_total=-196.00,
+            disable_rounded_total=0,
+            is_return=1,
+        )
+        self.assert_zatca_invariants(xml, target_payable=Decimal('196.00'))
+        self.assert_zatca_positive_values(xml)
 
     def test_case_a_acc_sinv_2026_00426_regression(self):
         """Historical Pattern Case A: ACC-SINV-2026-00426.
@@ -527,7 +659,8 @@ class TestZatcaMonetaryRounding(FrappeTestCase):
             {'amount': -100.00, 'net_amount': -100.00, 'rate': 100.00, 'qty': -1.0, 'tax_amount': -15.00}
         ]
         xml = self._build_test_xml(items_data=items, is_return=1)
-        self.assert_zatca_invariants(xml)
+        self.assert_zatca_invariants(xml, target_payable=Decimal('115.00'))
+        self.assert_zatca_positive_values(xml)
 
     def test_control_mixed_standard_and_zero_rated(self):
         """Mixed invoice with Standard rate (15%) and Zero-rated (0%) categories."""
