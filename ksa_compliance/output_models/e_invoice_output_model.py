@@ -719,14 +719,14 @@ class Einvoice:
             has_discount = isinstance(item.discount_amount, float) and item.discount_amount > 0
 
             tax_percent = abs(item.tax_rate or 0.0)
-            tax_amount_with_qty = canonical_money(item.tax_amount or 0.0)
+            tax_amount_with_qty = canonical_money(abs(item.tax_amount or 0.0))
             discount_with_qty = canonical_money(abs(item.discount_amount * item.qty) if has_discount else 0.0)
             if is_tax_included:
-                amount_with_qty = canonical_money(flt(item.amount) / (1 + (tax_percent / 100)))
+                amount_with_qty = canonical_money(abs(flt(item.amount)) / (1 + (tax_percent / 100)))
             else:
-                amount_with_qty = canonical_money(item.amount)
-            net_amount_with_qty = canonical_money(item.net_amount)
-            rate_without_qty = canonical_money(item.rate)
+                amount_with_qty = canonical_money(abs(item.amount))
+            net_amount_with_qty = canonical_money(abs(item.net_amount))
+            rate_without_qty = canonical_money(abs(item.rate))
             item_data = {
                 'idx': item.idx,
                 'qty': abs(item.qty),
@@ -925,7 +925,7 @@ class Einvoice:
 
         invoice_total_vat = None
         if self.sales_invoice_doc.doctype != 'Payment Entry':
-            invoice_total_vat = canonical_money(self.sales_invoice_doc.total_taxes_and_charges or 0.0)
+            invoice_total_vat = canonical_money(abs(self.sales_invoice_doc.total_taxes_and_charges or 0.0))
 
         tax_total = create_tax_total(tax_categories, invoice_total_vat, allowance_total_amount)
         self.result['invoice']['tax_total'] = tax_total
@@ -969,7 +969,7 @@ class Einvoice:
             and rounded_total is not None
             and rounded_total != 0.0
         ):
-            target_payable = canonical_money(rounded_total)
+            target_payable = canonical_money(abs(rounded_total))
             rounding_adjustment = canonical_money(target_payable - net_due)
             payable_amount = target_payable
         else:
